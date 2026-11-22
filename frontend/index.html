@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-cn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>log server for TOS</title>
+<link rel="icon" type="image/svg+xml" href="assets/icon.svg?v=__ASSET_VER__">
+<link rel="stylesheet" href="assets/styles.css?v=__ASSET_VER__">
+<!-- 一次性自愈：TOS 5/6 遗留的 Workbox Service Worker 会拦截同源请求并回旧缓存，
+     表现为「升级后 UI 不变」。每个版本检查一次，若有 SW 注册则注销并清 CacheStorage，
+     然后重载（与 TOS 自带 service-worker.js 的清理口径一致）。 -->
+<script>
+(function () {
+  try {
+    var VER = '__ASSET_VER__', KEY = 'logserver.sw_clean';
+    if (!('serviceWorker' in navigator)) return;
+    if (localStorage.getItem(KEY) === VER) return;
+    navigator.serviceWorker.getRegistrations().then(function (rs) {
+      if (!rs || !rs.length) { localStorage.setItem(KEY, VER); return; }
+      Promise.all(rs.map(function (r) { return r.unregister(); })).then(function () {
+        var done = function () { localStorage.setItem(KEY, VER); location.reload(); };
+        if (window.caches && caches.keys) {
+          caches.keys().then(function (ks) {
+            Promise.all(ks.map(function (k) { return caches.delete(k); })).then(done, done);
+          }, done);
+        } else { done(); }
+      });
+    }).catch(function () {});
+  } catch (e) { /* ignore */ }
+})();
+</script>
+</head>
+<body>
+
+<div id="logserver-ui" data-theme="light" lang="zh-cn">
+
+  <!-- ── 顶栏 ───────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 5h16M4 9h10M4 13h16M4 17h7"/>
+        <circle cx="17.5" cy="16" r="3.2"/>
+        <path d="m20 18.5 2 2"/>
+      </svg>
+      <div class="brand-text">
+        <strong id="app-title">log server for TOS</strong>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="icon-btn" id="refresh-btn" title="刷新当前页" aria-label="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── 主体 ───────────────────────────────────────────────────── -->
+  <div class="layout">
+    <aside class="sidebar">
+      <nav id="nav" aria-label="主导航"></nav>
+    </aside>
+    <main class="content" id="content" role="main">
+      <div class="empty">正在加载…</div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+</div>
+
+<noscript>
+  <p style="font:14px sans-serif;padding:20px">log server for TOS 需要启用 JavaScript。</p>
+</noscript>
+
+<script type="module" src="assets/app.js?v=__ASSET_VER__"></script>
+</body>
+</html>

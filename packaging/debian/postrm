@@ -1,0 +1,51 @@
+#!/bin/sh
+# log-server-for-tos postrm
+# ★ 契约：purge 只删「我们创建的配置」，**绝不删用户数据与共享夹**（打包指南坑 11f 规则 5）
+set -e
+
+APP_ID=log-server-for-tos
+
+case "$1" in
+    purge)
+        # 只清「安装期由我们生成、且可完全重建」的东西 + 应用配置；
+        # 数据/引擎/队列留在数据卷（下面打印位置提示），绝不触碰共享夹。
+        rm -f  "/usr/local/$APP_ID/$APP_ID.env" 2>/dev/null || true   # 运行时配置（可由 .example 重建）
+        rm -f  "/usr/www/images/icons/$APP_ID.svg" 2>/dev/null || true  # 平台图标入口
+        rm -rf "/usr/local/$APP_ID/conf"        2>/dev/null || true
+        # ★ webui/ 是 postinst 从包内 webui.bz2 解出来的派生目录（非 dpkg 文件）。
+        #   不清它会让 dpkg 因「目录非空」拒绝删除 /usr/local/<appid> → 命中
+        #   审核项「卸载后有残留文件」；真机实测（2026-10-13）已复现该残留。
+        rm -rf "/usr/local/$APP_ID/webui"       2>/dev/null || true
+        # 此时包文件已被 dpkg 删除、派生文件也已清理，空目录顺手移除（失败不报错）
+        rmdir  "/usr/local/$APP_ID"             2>/dev/null || true
+        # 专用用户：purge 时删除（与官方 §8.14 的 postrm 示例一致，避免「卸载后有残留」）。
+        # 数据卷上的数据保留 → 重装时 postinst 会重新 chown 给（可能是新 UID 的）应用用户，不会丢权限。
+        if id -u "$APP_ID" >/dev/null 2>&1; then
+            userdel "$APP_ID" 2>/dev/null || true
+            echo "log-server-for-tos: 已删除专用用户 $APP_ID（数据保留在数据卷）"
+        fi
+
+        echo "log-server-for-tos: 用户数据与共享夹已保留（purge 不删除用户数据）。"
+        for d in /Volume*/@apps/$APP_ID; do
+            [ -d "$d" ] && echo "  数据目录: $d   （如需彻底清理请手工删除）"
+        done
+        for d in /Volume*/$APP_ID; do
+            [ -d "$d" ] && echo "  共享文件夹: $d （用户业务数据，未删除）"
+        done
+        ;;
+    remove)
+        # 卸载但保留数据：只提示；平台图标入口一并移除
+        rm -f "/usr/www/images/icons/$APP_ID.svg" 2>/dev/null || true
+        echo "log-server-for-tos: 已卸载，用户数据保留在 /Volume*/@apps/$APP_ID 与 /Volume*/$APP_ID"
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0

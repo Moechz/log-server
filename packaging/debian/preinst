@@ -1,0 +1,24 @@
+#!/bin/sh
+# log-server-for-tos preinst —— 只做一件事：幂等创建专用非 root 用户/组
+# 依据：打包指南「专用运行用户（硬性要求，三处一致 + 双保险）」
+set -e
+
+APP_ID=log-server-for-tos
+
+# 组
+if ! getent group "$APP_ID" >/dev/null 2>&1; then
+    addgroup --system "$APP_ID" >/dev/null 2>&1 || groupadd --system "$APP_ID"
+fi
+
+# 用户（system 账号、无登录 shell、家目录指向 WorkingDirectory）
+if ! getent passwd "$APP_ID" >/dev/null 2>&1; then
+    adduser --system --no-create-home --disabled-password --ingroup "$APP_ID" \
+            --home "/usr/local/$APP_ID" "$APP_ID" >/dev/null 2>&1 \
+      || useradd --system --no-create-home --shell /usr/sbin/nologin \
+                 --gid "$APP_ID" --home-dir "/usr/local/$APP_ID" "$APP_ID"
+fi
+
+# /home/<user> 的可读可执行位（TOS 权限重置后需重跑，见打包指南）
+[ -d "/home/$APP_ID" ] && chmod 755 "/home/$APP_ID" || true
+
+exit 0

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>log server for TOS · 隐私政策</title>
+<style>
+  body{max-width:760px;margin:40px auto;padding:0 20px;font:15px/1.8 -apple-system,"Microsoft YaHei",sans-serif;color:#222}
+  h1{font-size:22px} h2{font-size:16px;margin-top:28px} code{background:#f4f4f6;padding:1px 5px;border-radius:4px}
+  ul{padding-left:22px} .muted{color:#777;font-size:13px}
+</style>
+</head>
+<body>
+<h1>log server for TOS 隐私政策</h1>
+<p class="muted">适用于 TOS 应用 <code>log-server-for-tos</code>。最后更新：随版本发布更新。</p>
+
+<h2>一、数据是否离开本机</h2>
+<p><strong>不会，除非你主动配置。</strong>本应用的全部采集、解析、存储、检索与告警都在你的 NAS 本地完成。只有在<strong>你自己配置了「转发目标」</strong>之后，被规则命中的日志才会按你的配置发送到该目标地址。</p>
+
+<h2>二、本应用会读取什么</h2>
+<ul>
+  <li>你显式添加的日志文件路径；</li>
+  <li>其他设备主动发送到本机接收端口的日志（syslog / SNMP Trap）；</li>
+  <li>平台在提供相应能力后授权本应用读取的系统日志（若能力未就绪，界面会标注「待平台支持」，本应用不会绕过）。</li>
+</ul>
+
+<h2>三、数据存放在哪里</h2>
+<p>运行时数据与日志索引保存在数据卷 <code>/Volume<N>/@apps/log-server-for-tos/data</code>，<strong>不写入系统分区</strong>。用户可见的导出/归档位于共享文件夹。</p>
+
+<h2>四、凭据与敏感信息</h2>
+<ul>
+  <li>转发目标密钥、TLS 私钥、SMTP 口令等凭据仅保存在应用私有目录，权限 <code>0600</code>；</li>
+  <li><strong>凭据不会写入系统日志、安装日志或诊断包</strong>；</li>
+  <li>导出诊断包前会自动脱敏；</li>
+  <li>可配置入库脱敏规则（例如掩码 password / token）。</li>
+</ul>
+
+<h2>五、本应用不会做的事</h2>
+<ul>
+  <li>不安装系统包、不修改 <code>rsyslog</code>/<code>journald</code> 配置；</li>
+  <li>不把服务用户加入系统用户组；</li>
+  <li>不修改防火墙或网络配置；</li>
+  <li>不读取平台内部数据库；</li>
+  <li>不向任何第三方服务器上报使用数据或日志内容。</li>
+</ul>
+
+<h2>六、卸载</h2>
+<p><code>apt remove</code> 保留你的数据；<code>apt purge</code> 只删除应用配置，<strong>不会删除你的数据与共享文件夹</strong>。</p>
+
+<h2>七、联系方式</h2>
+<p>问题与反馈：<a href="https://github.com/Moechz/log-server/issues">github.com/Moechz/log-server/issues</a></p>
+</body>
+</html>

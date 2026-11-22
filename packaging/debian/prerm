@@ -1,0 +1,38 @@
+#!/bin/sh
+# log-server-for-tos prerm
+# ★ 打包指南坑 10：prerm 无条件 disable 会导致升级后服务起不来。
+#   规则：**所有路径都 stop（+ 清残留进程）**，但**只在 remove / deconfigure 时 disable**。
+#   ★ 升级为何也要 stop（真机实测 2026-10-14）：dpkg 只替换文件，旧进程仍持有已删除的 inode；
+#     若 upgrade 路径不 stop，postinst 的 `start` 对「已在运行」的单元是空操作 →
+#     **新版二进制永远不生效**（表现为修好的 bug 依旧存在、界面仍旧版）。
+#     只 stop 不 disable，服务在 postinst 里会被重新拉起，开机自启不受影响（坑 10 的原始教训）。
+set -e
+
+APP_ID=log-server-for-tos
+
+stop_services() {
+    if [ -d /run/systemd/system ]; then
+        # 清残留进程（升级时旧进程可能不在 systemd 的 cgroup 里）
+        pkill -u "$APP_ID" 2>/dev/null || true
+        systemctl stop "$APP_ID.service"    >/dev/null 2>&1 || true
+        systemctl stop "$APP_ID-vl.service" >/dev/null 2>&1 || true
+    fi
+}
+
+case "$1" in
+    remove|deconfigure)
+        stop_services
+        if [ -d /run/systemd/system ]; then
+            systemctl disable "$APP_ID.service"    >/dev/null 2>&1 || true
+            systemctl disable "$APP_ID-vl.service" >/dev/null 2>&1 || true
+        fi
+        ;;
+    upgrade|failed-upgrade|disappear)
+        # 升级：停服务（让新二进制生效），但 **不禁用**（开机自启由 postinst 幂等 enable 保障）
+        stop_services
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

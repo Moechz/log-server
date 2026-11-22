@@ -1,0 +1,22 @@
+Package: log-server-for-tos
+Version: __VERSION__
+Section: admin
+Priority: optional
+Architecture: __DEB_ARCH__
+Depends: systemd
+Maintainer: Moechz <moechz@163.com>
+Homepage: https://github.com/Moechz/log-server
+Installed-Size: __INSTALLED_SIZE__
+Description: log server for TOS - unified log platform for TerraMaster TOS (collect, audit, monitor, forward, receive)
+ A unified log platform for TerraMaster TOS: audit retention, real-time monitoring,
+ log forwarding to a remote log server, and acting as a standard syslog server that
+ receives logs from switches/firewalls/other hosts.
+ .
+ Runs as a dedicated unprivileged user inside a hardened systemd sandbox. Runtime data
+ is stored on a data volume (/Volume<N>/@apps/log-server-for-tos/data), never on the system partition.
+ The bundled VictoriaLogs storage engine is built from upstream source with a public,
+ bit-reproducible recipe. Standard syslog ports 514/6514 are used (requires
+ AmbientCapabilities=CAP_NET_BIND_SERVICE, which is the only capability requested).
+ .
+ "apt remove" keeps /Volume<N>/@apps/log-server-for-tos; "apt purge" deletes configuration but
+ never touches user data or the shared folder.

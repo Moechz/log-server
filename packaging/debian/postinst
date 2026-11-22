@@ -1,0 +1,211 @@
+#!/bin/sh
+# log-server-for-tos postinst
+# 依据：TOS-DEB-PACKAGING-GUIDE.md（坑 9 不静默吞错 / 坑 10 两条路径都幂等 enable /
+#        坑 11f 数据落数据卷 + ter_share_add / nginx -t 校验失败即回滚）
+#
+# ★★ 能力边界（D-017）：本脚本**不做任何系统级集成** ——
+#    不 apt install 任何系统包、不改 rsyslog/journald 配置、不 usermod -aG 加入系统组、
+#    不写 /etc/audit/rules.d/、不改 iptables、不读平台内部数据库。
+#    平台能力未就绪时，应用会在 UI 内如实标注「待平台支持」。
+set -e
+
+APP_ID=log-server-for-tos
+APP_DIR="/usr/local/$APP_ID"
+ENV_FILE="$APP_DIR/$APP_ID.env"
+NGINX_CONF="/etc/nginx/conf.d/$APP_ID.conf"
+SERVICE="$APP_ID.service"
+VL_SERVICE="$APP_ID-vl.service"
+
+log()  { echo "[$APP_ID] $*"; }
+warn() { echo "[$APP_ID][WARN] $*"; }
+err()  { echo "[$APP_ID][ERROR] $*" >&2; }
+
+# ── 1) 反推数据卷（卷号逐机不同）────────────────────────────────
+resolve_datadir() {
+    for d in /Volume*/@apps/$APP_ID; do
+        [ -d "$d" ] && { echo "$d"; return 0; }
+    done
+    # 未预建：选剩余空间最大的 /Volume*
+    best=""; best_kb=0
+    for v in /Volume*; do
+        [ -d "$v" ] || continue
+        case "$v" in *"@apps"*|*"@"*) continue;; esac
+        kb=$(df -Pk "$v" 2>/dev/null | awk 'NR==2{print $4}')
+        [ -n "$kb" ] || continue
+        if [ "$kb" -gt "$best_kb" ]; then best_kb=$kb; best="$v"; fi
+    done
+    [ -n "$best" ] && { mkdir -p "$best/@apps/$APP_ID/data"; echo "$best/@apps/$APP_ID"; }
+}
+
+DATA_ROOT=$(resolve_datadir || true)
+if [ -z "$DATA_ROOT" ]; then
+    # 最后手段：回落系统分区，但**醒目告警**（绝不静默降级）
+    warn "无法定位数据卷，回落到 /var/lib/$APP_ID —— 这有撑爆系统分区的风险！"
+    warn "请手工迁移到 /Volume*/@apps/$APP_ID/data 并修改 $ENV_FILE"
+    DATA_ROOT="/var/lib/$APP_ID"
+    mkdir -p "$DATA_ROOT/data"
+fi
+log "数据根目录: $DATA_ROOT"
+
+for sub in data data/config data/config/tls data/state data/engine data/queue data/logs; do
+    mkdir -p "$DATA_ROOT/$sub"
+done
+chown -R "$APP_ID:$APP_ID" "$DATA_ROOT" 2>/dev/null || true
+# 应用根目录必须可被 nginx 穿过：/usr/www/images/icons/<appid>.svg 是指向
+# <DataRoot>/images/icons/<appid>.svg 的符号链接。若根目录为 750，nginx 无法
+# 读取图标 → 应用中心/桌面显示破图（2026-11-22 真机）。数据子目录仍保持私有。
+chmod 755 "$DATA_ROOT" 2>/dev/null || true
+for d in "$DATA_ROOT/images" "$DATA_ROOT/images/icons"; do
+    [ -d "$d" ] && chmod 755 "$d" 2>/dev/null || true
+done
+[ -f "$DATA_ROOT/images/icons/$APP_ID.svg" ] && chmod 644 "$DATA_ROOT/images/icons/$APP_ID.svg" 2>/dev/null || true
+
+# ── 2) 用户业务数据放共享夹（best-effort；失败则 mkdir 兜底）──
+SHARE_OK=1
+if command -v ter_share_add >/dev/null 2>&1; then
+    ter_share_add -name "$APP_ID" -owner "$APP_ID" >/dev/null 2>&1 || SHARE_OK=0
+else
+    SHARE_OK=0
+fi
+if [ "$SHARE_OK" -eq 0 ]; then
+    vol=$(echo "$DATA_ROOT" | sed 's#/@apps/.*##')
+    [ -d "$vol" ] && { mkdir -p "$vol/$APP_ID" && chown "$APP_ID:$APP_ID" "$vol/$APP_ID" 2>/dev/null || true; }
+    warn "ter_share_add 不可用或失败，已用普通目录兜底（仍在数据卷）"
+fi
+
+# ── 3) 生成 env（首装才写；升级不覆盖用户改动）──────────────────
+if [ ! -f "$ENV_FILE" ]; then
+    cp "$APP_DIR/$APP_ID.env.example" "$ENV_FILE"
+    # 把反推到的实际路径写入 env（env 优先级 > config.json）
+    sed -i "s#^LOGSERVER_DATA_DIR=.*#LOGSERVER_DATA_DIR=$DATA_ROOT/data#"       "$ENV_FILE"
+    sed -i "s#^VLOGS_STORAGE_PATH=.*#VLOGS_STORAGE_PATH=$DATA_ROOT/data/engine#" "$ENV_FILE"
+    sed -i "s#^LOGSERVER_SYSLOG_TLS_CERT=.*#LOGSERVER_SYSLOG_TLS_CERT=$DATA_ROOT/data/config/tls/server.crt#" "$ENV_FILE"
+    sed -i "s#^LOGSERVER_SYSLOG_TLS_KEY=.*#LOGSERVER_SYSLOG_TLS_KEY=$DATA_ROOT/data/config/tls/server.key#"   "$ENV_FILE"
+    chown "$APP_ID:$APP_ID" "$ENV_FILE"
+    chmod 640 "$ENV_FILE"
+    log "已生成 $ENV_FILE"
+else
+    log "保留已有 $ENV_FILE（升级不覆盖用户配置）"
+fi
+
+# ── 3a) 安全默认迁移：旧 env 的 LOGSERVER_AUTH_ADMINS=* 取消 ──────────
+# 旧版本把"所有能打开应用的 TOS 用户"当管理员（平台没有用户/角色查询接口）。
+# 0.1.7 起默认最小权限：TOS 会话=operator，管理操作用 <DataDir>/config/admin.token 解锁。
+# 这是对我们自己配置文件的收紧（不改系统），升级时执行一次，幂等。
+if [ -f "$ENV_FILE" ] && grep -qx 'LOGSERVER_AUTH_ADMINS=\*' "$ENV_FILE" 2>/dev/null; then
+    sed -i 's/^LOGSERVER_AUTH_ADMINS=\*$/LOGSERVER_AUTH_ADMINS=/' "$ENV_FILE"
+    log "安全默认：已把 LOGSERVER_AUTH_ADMINS=* 改为空（不再让所有 TOS 用户都是管理员）"
+    log "管理员解锁：读取 <数据目录>/config/admin.token 后在应用「设置」页输入"
+fi
+
+# ── 3b) 解压 webui.bz2（打包指南：postinst 负责解压 webui）──────────
+WEBUI_DIR="$APP_DIR/webui"
+if [ -f "$APP_DIR/webui.bz2" ]; then
+    rm -rf "$WEBUI_DIR"
+    mkdir -p "$WEBUI_DIR"
+    if tar -xjf "$APP_DIR/webui.bz2" -C "$WEBUI_DIR"; then
+        # 必须含可打开的 index.html，否则前端不可用
+        if [ ! -f "$WEBUI_DIR/index.html" ]; then
+            warn "webui.bz2 解压后未找到 index.html —— 前端可能不可用"
+        fi
+        chown -R "$APP_ID:$APP_ID" "$WEBUI_DIR" 2>/dev/null || true
+        chmod -R a+rX "$WEBUI_DIR" 2>/dev/null || true
+        log "已解压前端资源到 $WEBUI_DIR"
+    else
+        err "webui.bz2 解压失败（前端将不可用）"
+    fi
+else
+    warn "未找到 $APP_DIR/webui.bz2 —— 前端将不可用"
+fi
+
+# ── 3c) 应用图标：确保平台图标入口指向本应用（手动 dpkg 安装时也成立）──
+ICON_DIR=/usr/www/images/icons
+if [ -d "$ICON_DIR" ] && [ -f "$APP_DIR/images/icons/$APP_ID.svg" ]; then
+    ln -sfn "$APP_DIR/images/icons/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg" 2>/dev/null || true
+    chown -h root:root "$ICON_DIR/$APP_ID.svg" 2>/dev/null || true
+fi
+
+# ── 4) 端口冲突检测（★ 514 是标准端口，冲突风险高于高端口）────
+port_in_use() {
+    # $1 = 端口号；$2 = 协议(udp/tcp)。优先 ss，回退 /proc
+    if command -v ss >/dev/null 2>&1; then
+        if [ "$2" = "udp" ]; then ss -lnu 2>/dev/null | grep -qE "[:.]$1[[:space:]]"; else ss -lnt 2>/dev/null | grep -qE "[:.]$1[[:space:]]"; fi
+    elif [ -r /proc/net/$2 ]; then
+        hex=$(printf '%04X' "$1")
+        grep -q ":$hex " /proc/net/$2
+    else
+        return 1
+    fi
+}
+CONFLICT=0
+for p in 514 6514; do
+    for proto in udp tcp; do
+        if port_in_use "$p" "$proto"; then
+            warn "端口 $p/$proto 已被占用（可能是 rsyslog 远程接收或其他服务）"
+            warn "  → 请在 $ENV_FILE 中改用高端口（如 LOGSERVER_SYSLOG_*_PORT=1514/16514），或释放该端口"
+            CONFLICT=1
+        fi
+    done
+done
+[ "$CONFLICT" -eq 1 ] && warn "存在端口冲突：服务仍会安装，但接收功能可能启动失败 —— 请查看 systemctl status $SERVICE"
+
+# ── 5) nginx 配置校验（失败立即回滚删除）────────────────────────
+if [ -e "$NGINX_CONF" ] && command -v nginx >/dev/null 2>&1; then
+    if ! nginx -t >/dev/null 2>&1; then
+        err "nginx -t 校验失败，已回滚删除 $NGINX_CONF"
+        mv "$NGINX_CONF" "$NGINX_CONF.failed" 2>/dev/null || rm -f "$NGINX_CONF"
+        warn "原文件保留为 $NGINX_CONF.failed，请手工排查后再启用"
+    else
+        # 让新 conf 立即生效（reload 是热加载，不中断现有连接）。
+        # 真机实测（2026-10-13）：手动 dpkg -i 后若没有 reload，平台路由 http://NAS:8181/<appid>/ 会 404
+        # （conf.d 已 include，但运行中的 nginx 仍是旧配置）；应用中心安装路径由平台自身处理，
+        # 这里做 best-effort 兜底，失败不阻塞安装。
+        if systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1; then
+            log "已重载 nginx（使 $NGINX_CONF 立即生效）"
+        else
+            warn "nginx reload 失败（不影响安装；平台路由可能需手工 'nginx -s reload'）"
+        fi
+    fi
+fi
+
+# ── 6) daemon-reload + ★ 两条路径都幂等 enable（坑 10）──────────
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || warn "daemon-reload 失败"
+
+    systemctl enable "$VL_SERVICE" >/dev/null 2>&1 || warn "enable $VL_SERVICE 失败"
+    systemctl enable "$SERVICE"    >/dev/null 2>&1 || warn "enable $SERVICE 失败"
+
+    # ★ 用 restart 而不是 start：升级场景下旧进程仍在运行，`start` 是空操作 →
+    #   新二进制不生效（真机实测 2026-10-14）。restart 对「未运行」等价于 start，幂等。
+    systemctl restart "$VL_SERVICE"  || warn "restart $VL_SERVICE 失败（存储引擎未就绪，应用会降级提示）"
+    systemctl restart "$SERVICE"     || warn "restart $SERVICE 失败（请查看 journalctl -u $SERVICE）"
+
+    # ── 7) 健康轮询（坑 9：不要以「systemctl 返回成功」当作服务可用）──
+    port=$(grep -E '^LOGSERVER_HTTP_PORT=' "$ENV_FILE" | cut -d= -f2)
+    port=${port:-15280}
+    i=0
+    while [ $i -lt 30 ]; do
+        if curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+            log "服务健康检查通过（127.0.0.1:$port）"
+            break
+        fi
+        i=$((i+1)); sleep 1
+    done
+    if [ $i -ge 30 ]; then
+        warn "健康检查 30s 未通过，附加诊断快照："
+        systemctl status "$SERVICE" --no-pager 2>&1 | head -20 || true
+    fi
+
+    # 审查对照：把沙箱与能力的生效值写入安装日志
+    log "沙箱生效值（供安全审查对照）："
+    systemctl show "$SERVICE" -p NoNewPrivileges -p CapabilityBoundingSet \
+        -p AmbientCapabilities -p ProtectSystem -p ProtectHome 2>/dev/null || true
+fi
+
+log "安装完成。管理界面：http://<NAS>:8181/$APP_ID/ （经平台 nginx 反代）"
+log "接收端口：syslog 514/udp+tcp、6514/tls；SNMP Trap 15162/udp（可在 $ENV_FILE 调整）"
+
+# ★ 注意：本脚本**没有**创建/覆盖任何凭据文件；如后续需要，凭据一律 root-0600，
+#   且绝不写入 journal / dpkg 日志（打包指南坑 44 / F10 驳回理由）。
+
+exit 0

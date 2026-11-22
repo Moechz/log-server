@@ -1,0 +1,24 @@
+log-server
+Copyright (c) 2026 Moechz
+Licensed under the MIT License (see LICENSE).
+
+--------------------------------------------------------------------------------
+本产品包含第三方开源组件，其版权与许可声明如下：
+
+VictoriaLogs
+  Copyright (c) VictoriaMetrics, Inc.
+  Licensed under the Apache License, Version 2.0
+  https://github.com/VictoriaMetrics/VictoriaLogs
+  https://www.apache.org/licenses/LICENSE-2.0
+
+  说明：VictoriaLogs 由本仓库的公开构建配方（packaging/repro-build.sh +
+  packaging/Dockerfile.repro）从上游源码自行构建，构建过程可位级复现，
+  证据见 packaging/VERIFICATION.md。本产品不分发上游预编译二进制。
+
+  Apache License 2.0 全文见：https://www.apache.org/licenses/LICENSE-2.0
+--------------------------------------------------------------------------------
+
+Go 标准库（编译期内链接）
+  Copyright (c) The Go Authors
+  Licensed under a BSD-style license
+  https://go.dev/LICENSE

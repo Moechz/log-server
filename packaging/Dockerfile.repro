@@ -1,0 +1,20 @@
+# V6 材料三件套之二：一键复现环境
+# 用法：
+#   docker build -f packaging/Dockerfile.repro -t logserver-repro packaging/
+#   docker run --rm -v "$PWD:/repo" logserver-repro \
+#       /repo/packaging/repro-build.sh --arch amd64 --out /repo/.build/bin/victoria-logs --verify
+#
+# 工具链护栏：基座固定 ubuntu:22.04（= TOS 7 基座），Go 由 repro-build.sh 内部
+# 按固定版本 + sha256 下载校验，漂移即拒绝。
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl make git gcc libc6-dev file \
+ && rm -rf /var/lib/apt/lists/*
+
+# 说明：不在此处安装 Go —— 由 repro-build.sh 按锁定版本下载并校验哈希，
+#      以保证「工具链」这一变量在配方里可审计（而不是藏在镜像 layers 里）。
+WORKDIR /repo
+ENTRYPOINT ["/bin/bash"]

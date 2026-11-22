@@ -1,0 +1,49 @@
+# log-server-for-tos 存储引擎（VictoriaLogs）—— 辅助服务
+# ★ 依据打包指南坑 11：init.d/ 只放与 system_id 同名的主单元；
+#   本文件只作为 dpkg 实体文件落到 /etc/systemd/system/，否则应用中心安装会静默失败。
+[Unit]
+Description=VictoriaLogs (log server for TOS storage engine)
+Documentation=https://docs.victoriametrics.com/victorialogs/
+After=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=log-server-for-tos
+Group=log-server-for-tos
+WorkingDirectory=/usr/local/log-server-for-tos
+EnvironmentFile=-/usr/local/log-server-for-tos/log-server-for-tos.env
+# ★ 打包指南：ExecStart 禁变量展开 —— 必须用 sh -c 包装才能读到 env 变量。
+# ★ 存储位置（FR-307 / D-023）：由主程序 `--print-engine-path` 解析
+#   <DataDir>/config/storage.json（用户在「存储」页选择），失败则回退 env 默认值。
+#   flag 集已在本机 VL v1.52.1 实测可用（注意：**无全局 -streamFields**，jsonline 亦无对应项）
+ExecStart=/bin/sh -c 'ENGINE="$(/usr/local/log-server-for-tos/bin/log-server-for-tos --print-engine-path 2>/dev/null)"; \
+    [ -n "$ENGINE" ] || ENGINE="${VLOGS_STORAGE_PATH}"; \
+    exec /usr/local/log-server-for-tos/bin/victoria-logs \
+    -storageDataPath="$ENGINE" \
+    -httpListenAddr="${VLOGS_HTTP_ADDR}:${VLOGS_HTTP_PORT}" \
+    -retentionPeriod="${VLOGS_RETENTION_PERIOD}" \
+    -retention.maxDiskSpaceUsageBytes="${VLOGS_RETENTION_MAX_DISK_SPACE}"'
+# VL 只绑回环，无需 capability
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+# 存储位置可由用户在数据卷内自选（FR-307 / D-023）→ 需要放开数据卷写入。
+# ★★ 必须逐卷列出真实路径：**systemd 不展开通配符**（`-/Volume*` 是空操作，实测
+#    `ReadWritePaths=-/Volume*` 下写入仍报 Read-only file system；官方 §12.7 与我们的
+#    审计报告都记录过这一点）。`-` 前缀 = 该路径不存在就忽略，适配不同卷数的设备。
+#    非 root + Unix 权限/ACL 仍是最外层边界。
+ReadWritePaths=-/Volume1 -/Volume2 -/Volume3 -/Volume4 -/Volume5 -/Volume6 \
+              -/Volume7 -/Volume8 -/Volume9 -/Volume10 -/Volume11 -/Volume12 \
+              -/VolumeUSB1 -/VolumeUSB2 -/VolumeUSB3 -/VolumeUSB4 \
+              -/Volume1/@apps/log-server-for-tos/data
+LimitNOFILE=65536
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

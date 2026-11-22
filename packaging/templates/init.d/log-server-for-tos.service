@@ -1,0 +1,51 @@
+# log-server-for-tos 主服务（平台应用中心注册用）
+# 依据：TOS-DEB-PACKAGING-GUIDE.md §一 / §二（systemd 单元硬性要求）
+[Unit]
+Description=log server for TOS
+Documentation=https://github.com/Moechz/log-server
+After=network-online.target
+Wants=network-online.target
+# 存储引擎先起；但不做硬依赖 —— VL 未就绪时主服务应能启动并降级提示
+After=log-server-for-tos-vl.service
+Wants=log-server-for-tos-vl.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=log-server-for-tos
+Group=log-server-for-tos
+WorkingDirectory=/usr/local/log-server-for-tos
+# 前缀 - 表示可选：env 文件被误删也不致启动失败
+EnvironmentFile=-/usr/local/log-server-for-tos/log-server-for-tos.env
+ExecStart=/usr/local/log-server-for-tos/bin/log-server-for-tos
+# ★ 标准端口 514/6514（<1024）需要此 capability；官方已同意可申请。
+#   只保留这一个能力，其余全部丢弃（安全审查口径：只申请必需的）
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# 沙箱加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+# 存储位置可由用户在数据卷内自选（FR-307 / D-023）→ 需要放开数据卷写入。
+# ★★ 必须逐卷列出真实路径：**systemd 不展开通配符**（`-/Volume*` 是空操作，实测
+#    `ReadWritePaths=-/Volume*` 下写入仍报 Read-only file system；官方 §12.7 与我们的
+#    审计报告都记录过这一点）。`-` 前缀 = 该路径不存在就忽略，适配不同卷数的设备。
+#    非 root + Unix 权限/ACL 仍是最外层边界。
+ReadWritePaths=-/Volume1 -/Volume2 -/Volume3 -/Volume4 -/Volume5 -/Volume6 \
+              -/Volume7 -/Volume8 -/Volume9 -/Volume10 -/Volume11 -/Volume12 \
+              -/VolumeUSB1 -/VolumeUSB2 -/VolumeUSB3 -/VolumeUSB4 \
+              -/Volume1/@apps/log-server-for-tos/data
+LimitNOFILE=65536
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+# ★★ 禁止配置 Restart / RestartSec（生命周期由 TOS 应用中心统一管理 —— 商店审核项）★★
+
+[Install]
+WantedBy=multi-user.target
